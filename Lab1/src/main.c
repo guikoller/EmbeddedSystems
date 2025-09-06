@@ -11,18 +11,28 @@
 #define PADDING 2
 #define SQUARE_SIZE (HEADER_HEIGHT - 2*PADDING)
 
-uint32_t last_tick_ms = 0;
-uint32_t last_tick_s = 0;
-uint32_t color_tick_ms = 1000;
-
 static const uint16_t colors[] = {
     C_RED, C_GREEN, C_BLUE, C_YELL, C_CYAN, C_WHITE
 };
+
 #define COLORS_LEN (sizeof(colors)/sizeof(colors[0]))
 
 static inline int  uart_rx_ready(void) { return (USART1->SR & USART_SR_RXNE) != 0; }
 static inline char uart_getc(void)     { return (char)USART1->DR; }
 
+uint32_t last_tick_ms = 0;
+uint32_t last_tick_s = 0;
+uint32_t color_tick_ms = 1000;
+
+volatile uint32_t ball_delay = 20;
+
+void increase_ball_speed(void) {
+    if (ball_delay > 2) ball_delay -= 2;
+}
+
+void decrease_ball_speed(void) {
+    if (ball_delay < 100) ball_delay += 2;
+}
 static void clean_header(void){
     st7789_fill_rect_dma(0, 0, LCD_W, HEADER_HEIGHT, C_BLACK);
 }
@@ -53,105 +63,36 @@ static void draw_header_square(uint8_t i){
     st7789_fill_rect_dma(x, y, w, h, colors[i]);
 }
 
-static void demo_clear(void){
-    printf("[demo 1] Clear screen (black)\r\n");
-    st7789_fill_screen_dma(C_BLACK);
-    st7789_draw_text_5x7(20, 20, "CLEAR BLACK", C_WHITE, 2, 0, 0);
-}
+void animate_bouncing_circle(void) {
+    static int x = 50, y = 160, r = 20, dx = 4;
+    static uint32_t last_update = 0;
+    static uint32_t last_log = 0;
+    uint32_t now = millis();
+    if (now - last_update < ball_delay) return;
+    last_update = now;
 
-static void demo_pixels(void){
-    printf("[demo 2] Random pixels\r\n");
-    st7789_fill_screen(C_BLACK);
-    for (int i=0;i<2000;i++){
-        int x = rand() % LCD_W;
-        int y = rand() % LCD_H;
-        uint16_t c = (uint16_t)rand();
-        st7789_draw_pixel(x,y,c);
+    int old_x = x;
+
+    st7789_fill_circle(old_x, y, r, C_BLACK);
+
+    x += dx;
+    if (x + r >= LCD_W) 
+    {
+        x = LCD_W - r;
+        dx = -dx;
+    } 
+    else if (x - r <= 0) 
+    {
+        x = r;
+        dx = -dx;
     }
-}
 
-static void demo_hlines(void){
-    printf("[demo 3] Horizontal lines\r\n");
-    for (int y=0;y<LCD_H;y+=10){
-        uint16_t c = (uint16_t)rand();
-        st7789_draw_hline(0,y,LCD_W,c);
+    st7789_fill_circle(x, y, r, C_GREEN);
+
+    if (now - last_log >= 200) {
+        printf("[LOG] Uptime: %lu ms | Ball X: %d\r\n", now, x);
+        last_log = now;
     }
-}
-
-static void demo_vlines(void){
-    printf("[demo 4] Vertical lines\r\n");
-    for (int x=0;x<LCD_W;x+=10){
-        uint16_t c = (uint16_t)rand();
-        st7789_draw_vline(x,0,LCD_H,c);
-    }
-}
-
-static void demo_rects(void){
-    printf("[demo 5] Random rectangles (outline)\r\n");
-    st7789_fill_screen(C_BLACK);
-    for (int i=0;i<10;i++){
-        int x = rand()%200;
-        int y = rand()%200;
-        int w = 20+rand()%40;
-        int h = 20+rand()%40;
-        uint16_t c = (uint16_t)rand();
-        st7789_draw_rect(x,y,w,h,c);
-    }
-}
-
-static void demo_fills(void){
-    printf("[demo 6] Filled rectangles (DMA)\r\n");
-    st7789_fill_screen(C_BLACK);
-    for (int i=0;i<5;i++){
-        int x = rand()%200;
-        int y = rand()%200;
-        int w = 20+rand()%40;
-        int h = 20+rand()%40;
-        uint16_t c = (uint16_t)rand();
-        printf("  rect #%d: x=%d y=%d w=%d h=%d color=0x%04X\r\n",
-               i, x,y,w,h,c);
-        st7789_fill_rect_dma(x,y,w,h,c);
-        delay_ms(200);
-    }
-}
-
-static void demo_circles(void){
-    printf("[demo 7] Random circles\r\n");
-    st7789_fill_screen(C_BLACK);
-    for (int i=0;i<8;i++){
-        int x = rand()%LCD_W;
-        int y = rand()%LCD_H;
-        int r = 10+rand()%30;
-        uint16_t c = (uint16_t)rand();
-        printf("  circle #%d: cx=%d cy=%d r=%d color=0x%04X\r\n",
-               i, x,y,r,c);
-        st7789_draw_circle(x,y,r,c);
-    }
-}
-
-static void draw_circle(int cx, int cy, int r, uint16_t color){
-    st7789_fill_circle(cx, cy, r, color);
-}
-
-static void demo_fillcircles(void){
-    printf("[demo 8] Filled circles\r\n");
-    st7789_fill_screen(C_BLACK);
-    for (int i=0;i<6;i++){
-        int x = rand()%LCD_W;
-        int y = rand()%LCD_H;
-        int r = 10+rand()%40;
-        uint16_t c = (uint16_t)rand();
-        printf("  fillcirc #%d: cx=%d cy=%d r=%d color=0x%04X\r\n",
-               i, x,y,r,c);
-        st7789_fill_circle(x,y,r,c);
-    }
-}
-
-static void demo_text(void){
-    printf("[demo 9] Text demo\r\n");
-    st7789_fill_screen(C_BLACK);
-    st7789_draw_text_5x7(10, 40, "UTFPR - SIS.EMBARCADOS", C_YELL, 2, 0, 0);
-    st7789_draw_text_5x7(10, 80, "MENU DEMO", C_CYAN, 2, 0, 0);
 }
 
 int main(void){
@@ -162,28 +103,21 @@ int main(void){
     st7789_set_speed_div(0);
 
     printf("\r\n=== MENU ST7789 ===\r\n");
-    printf("Digite 1..9 e pressione Enter:\r\n");
-    printf("1: Clear\n2: Pixels\n3: Hlines\n4: Vlines\n5: Rects\n");
-    printf("6: Fills\n7: Circles\n8: FillCircles\n9: Text\r\n");
+    printf("LAB 01 - Display\r\n");
+    printf("1: Aumentar Velocidade\n");
+    printf("2: Diminuir Velocidade\n");
 
     st7789_fill_screen(C_BLACK);
     draw_header(millis());
 
     for(;;){
         draw_header(millis());
-        draw_circle(120, 160, 50, C_GREEN);
+        animate_bouncing_circle();
         if (uart_rx_ready()){
             char c = uart_getc();
             switch(c){
-                case '1': demo_clear(); break;
-                case '2': demo_pixels(); break;
-                case '3': demo_hlines(); break;
-                case '4': demo_vlines(); break;
-                case '5': demo_rects(); break;
-                case '6': demo_fills(); break;
-                case '7': demo_circles(); break;
-                case '8': demo_fillcircles(); break;
-                case '9': demo_text(); break;
+                case '1': increase_ball_speed(); break;
+                case '2': decrease_ball_speed(); break;
                 default: break;
             }
         }
