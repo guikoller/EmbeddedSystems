@@ -7,10 +7,17 @@
 #include "board.h"
 #include "main.h" 
 
-#define HEADER_HEIGHT 64
+#define HEADER_HEIGHT 32
+#define PADDING 2
+#define SQUARE_SIZE (HEADER_HEIGHT - 2*PADDING)
 uint32_t last_tick_ms = 0;
 uint32_t last_tick_s = 0;
 uint32_t color_tick_ms = 1000;
+
+uint16_t colors[] = {
+    C_RED, C_GREEN, C_BLUE, C_YELL, C_CYAN, C_WHITE
+};
+
 
 static inline int  uart_rx_ready(void) { return (USART1->SR & USART_SR_RXNE) != 0; }
 static inline char uart_getc(void)     { return (char)USART1->DR; }
@@ -21,11 +28,22 @@ static void clean_header(void){
 
 static void draw_header(uint32_t uptime_ms){
     if (uptime_ms - last_tick_ms >= color_tick_ms) {
+        static uint8_t i = 0;
+
         clean_header();
+
         uint32_t seconds = uptime_ms / 1000u;
         char string_to_value[24];
         snprintf(string_to_value, sizeof(string_to_value), "Uptime: %lu s", seconds);
-        st7789_draw_text_5x7(0, 0, string_to_value, C_WHITE, 2, 0, 0);
+        st7789_draw_text_5x7(PADDING, PADDING, string_to_value, C_WHITE, 2, 0, 0);
+
+        uint16_t x = (uint16_t)(LCD_W - SQUARE_SIZE - PADDING);
+        uint16_t y = (uint16_t)PADDING;
+        uint16_t w = (uint16_t)SQUARE_SIZE;
+        uint16_t h = (uint16_t)SQUARE_SIZE;
+        st7789_fill_rect_dma(x, y, w, h, colors[i]);
+
+        i = (uint8_t)((i + 1u) % (sizeof(colors)/sizeof(colors[0])));
         last_tick_ms = uptime_ms;
         last_tick_s  = seconds;
     }
