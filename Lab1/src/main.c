@@ -5,9 +5,32 @@
 #include "serial.h"
 #include "st7789.h"
 #include "board.h"
+#include "main.h" 
+
+#define HEADER_HEIGHT 64
+uint32_t last_tick_ms = 0;
+uint32_t last_tick_s = 0;
+uint32_t color_tick_ms = 1000;
 
 static inline int  uart_rx_ready(void) { return (USART1->SR & USART_SR_RXNE) != 0; }
 static inline char uart_getc(void)     { return (char)USART1->DR; }
+
+static void clean_header(void){
+    st7789_fill_rect_dma(0, 0, LCD_W, HEADER_HEIGHT, C_BLACK);
+}
+
+static void draw_header(uint32_t uptime_ms){
+    if (uptime_ms - last_tick_ms >= color_tick_ms) {
+        clean_header();
+        uint32_t seconds = uptime_ms / 1000u;
+        char string_to_value[24];
+        snprintf(string_to_value, sizeof(string_to_value), "Uptime: %lu s", seconds);
+        st7789_draw_text_5x7(0, 0, string_to_value, C_WHITE, 2, 0, 0);
+        last_tick_ms = uptime_ms;
+        last_tick_s  = seconds;
+    }
+}
+
 
 static void demo_clear(void){
     printf("[demo 1] Clear screen (black)\r\n");
@@ -106,10 +129,9 @@ static void demo_text(void){
     st7789_draw_text_5x7(10, 80, "MENU DEMO", C_CYAN, 2, 0, 0);
 }
 
-
 int main(void){
     delay_init();
-    serial_stdio_init(115200);  
+    serial_stdio_init(115200);
 
     st7789_init();
     st7789_set_speed_div(0);
@@ -120,8 +142,11 @@ int main(void){
     printf("6: Fills\n7: Circles\n8: FillCircles\n9: Text\r\n");
 
     st7789_fill_screen(C_BLACK);
+    draw_header(millis());
 
     for(;;){
+        draw_header(millis());
+
         if (uart_rx_ready()){
             char c = uart_getc();
             switch(c){
