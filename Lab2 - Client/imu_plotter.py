@@ -35,7 +35,7 @@ SHARP_TURN_GYRO_THRESHOLD = 90.0  # deg/s
 MAX_PLOT_POINTS = 30  # ~2 seconds at 100Hz
 
 # Plot update rate (FPS) - separate from data rate
-PLOT_UPDATE_FPS = 15  # Update plots 30 times per second (smooth but not overwhelming)
+PLOT_UPDATE_FPS = 15  # Update plots 15 times per second (smooth but not overwhelming)
 
 # Serial data header
 DATA_HEADER = "[CAMARADAS DO EDU]:"
