@@ -1,0 +1,133 @@
+/**
+ * ESP32 Receiver Station (Alternative to USB Serial)
+ * 
+ * This code is for the RECEIVER ESP32 that connects to your PC via USB.
+ * It receives data from the toy car's HC-12 and forwards it to USB Serial.
+ * 
+ * Hardware Setup:
+ * ===============
+ * HC-12 RF Module (UART):
+ *   - VCC  → 5V (or 3.3V)
+ *   - GND  → GND
+ *   - TX   → GPIO 16 (RX2)
+ *   - RX   → GPIO 17 (TX2)
+ *   - SET  → GND
+ * 
+ * Connection to PC:
+ *   - USB cable to computer
+ *   - Open COM port at 115200 baud in your Python plotter
+ * 
+ * Usage:
+ * ======
+ * 1. Upload this code to receiver ESP32
+ * 2. Connect receiver ESP32 to PC via USB
+ * 3. Run Python plotter: python imu_plotter.py
+ * 4. Select the ESP32's COM port
+ * 5. Click "Connect"
+ * 6. Power on the toy car transmitter
+ * 7. See real-time data!
+ * 
+ * Author: AI Assistant
+ * Date: October 27, 2025
+ */
+
+#include <Arduino.h>
+
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
+// HC-12 UART Configuration
+#define HC12_TX_PIN     17    // ESP32 TX2 → HC-12 RX
+#define HC12_RX_PIN     16    // ESP32 RX2 → HC-12 TX
+#define HC12_BAUD       9600  // Must match transmitter
+
+// USB Serial Configuration
+#define USB_BAUD        115200
+
+// LED Pin
+#define LED_PIN         2
+
+// Statistics
+unsigned long packetsReceived = 0;
+unsigned long lastStatsTime = 0;
+unsigned long lastLedToggle = 0;
+bool ledState = false;
+
+// ============================================================================
+// GLOBAL OBJECTS
+// ============================================================================
+
+HardwareSerial HC12(2);  // Use UART2 for HC-12
+
+// ============================================================================
+// SETUP
+// ============================================================================
+
+void setup() {
+    // Initialize USB Serial (to PC)
+    Serial.begin(USB_BAUD);
+    delay(1000);
+    
+    // Initialize LED
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+    
+    // Print startup message to USB Serial
+    Serial.println("\n\n");
+    Serial.println("╔════════════════════════════════════════════════╗");
+    Serial.println("║  ESP32 RF Receiver Station                     ║");
+    Serial.println("║  HC-12 → USB Serial Bridge                     ║");
+    Serial.println("╚════════════════════════════════════════════════╝");
+    Serial.println();
+    Serial.println("Waiting for data from toy car...");
+    Serial.println();
+    
+    // Initialize HC-12 (UART2)
+    HC12.begin(HC12_BAUD, SERIAL_8N1, HC12_RX_PIN, HC12_TX_PIN);
+    
+    // Blink LED to show ready
+    for (int i = 0; i < 3; i++) {
+        digitalWrite(LED_PIN, HIGH);
+        delay(100);
+        digitalWrite(LED_PIN, LOW);
+        delay(100);
+    }
+    
+    lastStatsTime = millis();
+}
+
+// ============================================================================
+// MAIN LOOP
+// ============================================================================
+
+void loop() {
+    // Check if data available from HC-12
+    if (HC12.available()) {
+        // Read one line from HC-12
+        String receivedData = HC12.readStringUntil('\n');
+        
+        // Forward to USB Serial (to PC)
+        Serial.println(receivedData);
+        
+        // Count packets
+        packetsReceived++;
+        
+        // Blink LED to show activity
+        digitalWrite(LED_PIN, HIGH);
+        delay(10);
+        digitalWrite(LED_PIN, LOW);
+    }
+    
+    // Print statistics every 5 seconds (to USB Serial, for debugging)
+    unsigned long currentTime = millis();
+    if (currentTime - lastStatsTime >= 5000) {
+        // Comment out these debug lines if they interfere with plotter
+        // Serial.print("# Packets received: ");
+        // Serial.println(packetsReceived);
+        lastStatsTime = currentTime;
+    }
+    
+    // Small delay
+    delay(1);
+}
