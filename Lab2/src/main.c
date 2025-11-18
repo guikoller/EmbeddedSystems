@@ -37,8 +37,8 @@ static void hc12_init(uint32_t baudrate) {
     GPIOA->AFR[0] &= ~((0xFu<<(2*4)) | (0xFu<<(3*4)));
     GPIOA->AFR[0] |=  ((7u<<(2*4)) | (7u<<(3*4)));
     
-    uint32_t apb1 = SystemCoreClock / 2;
-    USART2->BRR = apb1 / baudrate;
+    uint32_t apb1 = 16000000;
+    USART2->BRR = (apb1 + (9600/2))/9600;
     USART2->CR1 = USART_CR1_TE | USART_CR1_UE;
 }
 
@@ -95,17 +95,17 @@ static void update_display(void) {
 static void update_leds(void) {
     uint32_t now = millis();
     
-    if (led_red_timer && (now - led_red_timer >= 3000)) {
+    if (led_red_timer && (now - led_red_timer >= 300)) {
         led_off(LED_RED_PIN);
         led_red_timer = 0;
     }
     
-    if (led_green_timer && (now - led_green_timer >= 3000)) {
+    if (led_green_timer && (now - led_green_timer >= 300)) {
         led_off(LED_GREEN_PIN);
         led_green_timer = 0;
     }
     
-    if (led_blue_timer && (now - led_blue_timer >= 3000)) {
+    if (led_blue_timer && (now - led_blue_timer >= 300)) {
         led_off(LED_BLUE_PIN);
         led_blue_timer = 0;
     }
