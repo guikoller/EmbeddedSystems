@@ -1,11 +1,13 @@
 #include "stm32f4xx.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "serial_stdio.h"
 #include "mpu6050.h"
 #include "st7789.h"
-#include "delay_rtos.h"
+// NÃO usar delay_rtos aqui antes do scheduler
+// #include "delay_rtos.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -33,6 +35,20 @@ void vApplicationMallocFailedHook(void) {
     taskDISABLE_INTERRUPTS();
     for (;;) {
     }
+}
+
+/* ==== busy delay só para antes do scheduler ==== */
+
+static void busy_delay_cycles(volatile uint32_t cycles) {
+    while (cycles--) {
+        __asm volatile ("nop");
+    }
+}
+
+/* aproximado: assume SystemCoreClock correto */
+static void busy_delay_ms(uint32_t ms) {
+    uint32_t cycles_per_ms = SystemCoreClock / 8000u; // aproximadamente
+    busy_delay_cycles(cycles_per_ms * ms);
 }
 
 /* ==== defines ==== */
@@ -67,8 +83,6 @@ static QueueHandle_t mpuQueue = NULL;
 /* ==== HC-12 / USART2 ==== */
 
 static void hc12_init(uint32_t baudrate) {
-    (void)baudrate; /* você está ignorando o parâmetro, então deixa explícito */
-
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
@@ -77,9 +91,13 @@ static void hc12_init(uint32_t baudrate) {
     GPIOA->AFR[0] &= ~((0xFu<<(2*4)) | (0xFu<<(3*4)));
     GPIOA->AFR[0] |=  ((7u<<(2*4)) | (7u<<(3*4)));
 
-    /* seu clock fixo de 16 MHz para APB1 */
-    uint32_t apb1 = 16000000u;
-    USART2->BRR = (apb1 + (9600u/2u)) / 9600u;
+    USART2->CR1 = 0;
+    USART2->CR2 = 0;
+    USART2->CR3 = 0;
+
+    /* PCLK1 real: Blackpill F411 -> ~ SystemCoreClock / 2 (100 MHz / 2 = 50 MHz) */
+    uint32_t apb1 = SystemCoreClock / 2u;
+    USART2->BRR = apb1 / baudrate;        /* 50_000_000 / 9600 ≈ 5208 (0x1458) */
 
     USART2->CR1 = USART_CR1_TE | USART_CR1_UE;
 }
@@ -223,7 +241,6 @@ static void TelemetryTask(void *arg) {
         if (mpu6050_read_all(&r) == 0) {
             char buf[80];
 
-            /* formato EXATO, com \n no final */
             snprintf(buf, sizeof(buf),
                      "[CAMARADAS DO EDU]: %d, %d, %d, %d, %d, %d\n",
                      r.ax, r.ay, r.az, r.gx, r.gy, r.gz);
@@ -292,8 +309,7 @@ static void ButtonTask(void *arg) {
 /* ==== main ==== */
 
 int main(void) {
-    SystemCoreClockUpdate();
-    delay_init();
+    SystemCoreClockUpdate();   // garante SystemCoreClock correto
 
     leds_init();
     button_init();
@@ -305,12 +321,12 @@ int main(void) {
     printf("HC12 initialized\n");
 
     led_on(LED_RED_PIN);
-    delay_ms(200);
+    busy_delay_ms(200);
     led_off(LED_RED_PIN);
 
     st7789_init();
     st7789_fill_screen_dma(COLOR_BLACK);
-    delay_ms(200);
+    busy_delay_ms(200);
     st7789_set_speed_div(2);
     printf("Display initialized\n");
 
@@ -322,9 +338,9 @@ int main(void) {
         st7789_draw_text_5x7(10, 100, "MPU INIT ERROR", COLOR_WHITE, 2, 0, 0);
         for (;;) {
             led_on(LED_RED_PIN);
-            delay_ms(150);
+            busy_delay_ms(150);
             led_off(LED_RED_PIN);
-            delay_ms(150);
+            busy_delay_ms(150);
         }
     }
 
