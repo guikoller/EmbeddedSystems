@@ -10,9 +10,10 @@ calculates derivatives (jerk), and detects motion events (impacts, braking, shar
 import sys
 import numpy as np
 from collections import deque
+from datetime import datetime
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QComboBox, QLineEdit, QLabel, QTextEdit, QTabWidget, QGroupBox
+    QPushButton, QComboBox, QLineEdit, QLabel, QTextEdit, QTabWidget, QGroupBox, QPlainTextEdit
 )
 from PySide6.QtCore import QThread, Signal, QTimer, Qt
 from PySide6.QtGui import QFont
@@ -25,11 +26,10 @@ import time
 # CONFIGURATION CONSTANTS
 # ============================================================================
 
-# Event Detection Thresholds (easily adjustable)
-IMPACT_JERK_THRESHOLD = 100.0  # m/s³
-BRAKING_ACCEL_THRESHOLD = -5.0  # m/s²
-BRAKING_DURATION_MIN = 0.25  # seconds
-SHARP_TURN_GYRO_THRESHOLD = 90.0  # deg/s
+# Event Detection Thresholds (matching STM32 main.c)
+ACCEL_BRAKE_THRESHOLD = -2000  # Braking detection (ax < threshold)
+ACCEL_CRASH_THRESHOLD = 5000 # Crash/Impact detection (total_accel > threshold)
+GYRO_CURVE_THRESHOLD = 5000    # Sharp turn detection (|gz| > threshold)
 
 # Data buffer size for plotting
 MAX_PLOT_POINTS = 30  # ~2 seconds at 100Hz
@@ -54,6 +54,7 @@ class SerialReaderThread(QThread):
     data_received = Signal(float, float, float, float, float, float, float)  # timestamp, ax, ay, az, gx, gy, gz
     error_occurred = Signal(str)
     connection_lost = Signal()
+    raw_data_received = Signal(str)  # Signal for raw serial data
     
     def __init__(self, port, baudrate):
         super().__init__()
@@ -77,6 +78,10 @@ class SerialReaderThread(QThread):
                     if self.serial_connection.in_waiting > 0:
                         # Read a complete line (until \n)
                         line = self.serial_connection.readline().decode('utf-8', errors='ignore').strip()
+                        
+                        # Emit raw data for display
+                        if line:  # Only emit non-empty lines
+                            self.raw_data_received.emit(line)
                         
                         # Check if the line starts with the required header
                         if line.startswith(DATA_HEADER):
@@ -155,8 +160,10 @@ class IMUPlotterApp(QMainWindow):
         self.prev_az = None
         self.prev_timestamp = None
         
-        # Braking detection state
-        self.braking_start_time = None
+        # Event detection states (matching STM32 logic)
+        self.brake_detected = False
+        self.crash_detected = False
+        self.curve_detected = False
         
         # Serial thread
         self.serial_thread = None
@@ -202,7 +209,7 @@ class IMUPlotterApp(QMainWindow):
         connection_layout.addWidget(refresh_btn)
         
         connection_layout.addWidget(QLabel("Baud Rate:"))
-        self.baudrate_input = QLineEdit("115200")
+        self.baudrate_input = QLineEdit("9600")
         self.baudrate_input.setMaximumWidth(100)
         connection_layout.addWidget(self.baudrate_input)
         
@@ -270,6 +277,14 @@ class IMUPlotterApp(QMainWindow):
         
         plot_tabs.addTab(self.jerk_plot_widget, "Jerk")
         
+        # Plot 4: Raw Serial Data Console
+        self.serial_console = QPlainTextEdit()
+        self.serial_console.setReadOnly(True)
+        self.serial_console.setFont(QFont("Courier", 9))
+        self.serial_console.setMaximumBlockCount(500)  # Limit to last 500 lines
+        self.serial_console.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4;")
+        plot_tabs.addTab(self.serial_console, "Serial Console")
+        
         main_layout.addWidget(plot_tabs, stretch=3)
         
         # ===== BOTTOM: EVENT STATUS PANEL =====
@@ -317,6 +332,7 @@ class IMUPlotterApp(QMainWindow):
             self.serial_thread.data_received.connect(self.handle_data)
             self.serial_thread.error_occurred.connect(self.handle_error)
             self.serial_thread.connection_lost.connect(self.handle_disconnection)
+            self.serial_thread.raw_data_received.connect(self.handle_raw_data)
             self.serial_thread.start()
             
             self.connect_btn.setText("Disconnect")
@@ -404,32 +420,41 @@ class IMUPlotterApp(QMainWindow):
         self.plot_needs_update = True
     
     def detect_events(self, ax, ay, az, gx, gy, gz, jx, jy, jz, timestamp):
-        """Detect motion events based on sensor data and derivatives."""
+        """Detect motion events based on sensor data (matching STM32 logic)."""
         
-        # 1. IMPACT DETECTION
-        # Calculate jerk magnitude
-        jerk_magnitude = np.sqrt(jx**2 + jy**2 + jz**2)
-        if jerk_magnitude > IMPACT_JERK_THRESHOLD:
-            self.log_event(f"⚠️ IMPACT DETECTED! (Jerk magnitude: {jerk_magnitude:.2f} m/s³)", event=True)
-        
-        # 2. BRAKING DETECTION
+        # 1. BRAKING DETECTION (RED LED)
         # Check if ax is below the braking threshold
-        if ax < BRAKING_ACCEL_THRESHOLD:
-            if self.braking_start_time is None:
-                self.braking_start_time = timestamp
-            else:
-                braking_duration = timestamp - self.braking_start_time
-                if braking_duration >= BRAKING_DURATION_MIN:
-                    self.log_event(f"🛑 BRAKING (ax: {ax:.2f} m/s², duration: {braking_duration:.2f}s)", event=True)
-                    # Reset to avoid repeated messages
-                    self.braking_start_time = timestamp
-        else:
-            self.braking_start_time = None
+        if ax < ACCEL_BRAKE_THRESHOLD and not self.brake_detected:
+            self.brake_detected = True
+            self.log_event(f"🛑 BRAKING DETECTED (ax: {ax:.2f})", event=True)
+        elif ax > ACCEL_BRAKE_THRESHOLD:
+            self.brake_detected = False
         
-        # 3. SHARP TURN DETECTION
-        # Check if |gz| exceeds the threshold (assuming gz is the yaw axis)
-        if abs(gz) > SHARP_TURN_GYRO_THRESHOLD:
-            self.log_event(f"🔄 SHARP TURN (gz: {gz:.2f} deg/s)", event=True)
+        # 2. CRASH/IMPACT DETECTION (GREEN LED)
+        # Calculate total acceleration (sum of absolute values)
+        total_accel = ax
+        if ay < 0:
+            total_accel -= ay
+        else:
+            total_accel += ay
+        if az < 0:
+            total_accel -= az
+        else:
+            total_accel += az
+        
+        if total_accel > ACCEL_CRASH_THRESHOLD and not self.crash_detected:
+            self.crash_detected = True
+            self.log_event(f"⚠️ CRASH/IMPACT DETECTED (total_accel: {total_accel:.2f})", event=True)
+        elif total_accel < ACCEL_CRASH_THRESHOLD / 2:
+            self.crash_detected = False
+        
+        # 3. SHARP TURN DETECTION (BLUE LED)
+        # Check if |gz| exceeds the threshold
+        if (gz > GYRO_CURVE_THRESHOLD or gz < -GYRO_CURVE_THRESHOLD) and not self.curve_detected:
+            self.curve_detected = True
+            self.log_event(f"🔄 SHARP TURN DETECTED (gz: {gz:.2f})", event=True)
+        elif GYRO_CURVE_THRESHOLD / 2 > gz > -GYRO_CURVE_THRESHOLD / 2:
+            self.curve_detected = False
     
     def update_plots_if_needed(self):
         """Update plots only if new data has arrived (called by timer at fixed FPS)."""
@@ -494,6 +519,13 @@ class IMUPlotterApp(QMainWindow):
     def handle_error(self, error_message):
         """Handle errors from the serial thread."""
         self.log_event(f"ERROR: {error_message}", error=True)
+    
+    def handle_raw_data(self, raw_line):
+        """Handle raw serial data for display in the console."""
+        now = datetime.now()
+        timestamp = now.strftime("%H:%M:%S") + f".{now.microsecond // 1000:03d}"
+        formatted_line = f"<span style='color: #569cd6;'>[{timestamp}]</span> <span style='color: #d4d4d4;'>{raw_line}</span>"
+        self.serial_console.appendHtml(formatted_line)
     
     def handle_disconnection(self):
         """Handle unexpected disconnection."""
