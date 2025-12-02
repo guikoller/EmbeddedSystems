@@ -68,9 +68,9 @@ void vApplicationMallocFailedHook(void) {
 // Dimensões do labirinto
 #define MAZE_WIDTH      16
 #define MAZE_HEIGHT     16
-#define CELL_SIZE       14      // pixels por célula
-#define MAZE_OFFSET_X   8
-#define MAZE_OFFSET_Y   30      // Mudado de 20 para dar espaço ao relógio
+#define CELL_SIZE       13      // pixels por célula (Reduzido de 14 para 13 para caber na tela)
+#define MAZE_OFFSET_X   16      // Centralizado horizontalmente
+#define MAZE_OFFSET_Y   30      // Espaço para o relógio no topo
 
 // Tipo de célula
 #define CELL_EMPTY      0
@@ -80,10 +80,9 @@ void vApplicationMallocFailedHook(void) {
 
 // Física
 #define GRAVITY         200.0f   // aceleração da gravidade (pixels/s²)
-#define FRICTION        0.92f    // coeficiente de atrito
 #define BALL_RADIUS     4        // raio da bolinha em pixels
-#define MAX_VELOCITY    80.0f    // velocidade máxima (pixels/s)
-#define TILT_SCALE      0.0015f  // escala de conversão acelerômetro -> aceleração
+#define MAX_VELOCITY    40.0f    // velocidade máxima (pixels/s)
+#define TILT_SCALE      0.0005f  // escala de conversão acelerômetro -> aceleração
 
 // Jogo
 #define MAX_LIVES       3
@@ -106,6 +105,7 @@ typedef struct {
 /* REQUISITO: Máquina de Estados */
 typedef enum {
     GAME_INIT,           // Estado inicial
+    GAME_SELECT_MAP,     // Seleção de Mapa
     GAME_READY,          // Pronto para começar
     GAME_PLAYING,        // Jogando
     GAME_PAUSED,         // Pausado
@@ -125,10 +125,11 @@ typedef struct {
 
 static Ball ball;
 static Maze maze;
-static GameState game_state = GAME_INIT;
+static volatile GameState game_state = GAME_INIT;
 static uint8_t lives = MAX_LIVES;
 static uint32_t game_time_ms = 0;
 static uint32_t best_time_ms = 0xFFFFFFFF;
+static int selected_map_idx = 0;
 
 /* REQUISITO: Relógio hh:mm:ss */
 static ClockTime system_clock = {0, 0, 0};
@@ -143,10 +144,14 @@ static TimerHandle_t clock_timer = NULL;         // Software timer para relógio
 static volatile uint8_t button_pressed = 0;
 static uint8_t button_prev = 0;
 
+// Offsets de calibração do MPU6050
+static int16_t accel_offset_x = 0;
+static int16_t accel_offset_y = 0;
+
 /* ==== Labirinto ==== */
 
-// Mapa do labirinto (1=parede, 0=vazio, 2=buraco, 3=objetivo)
-static const uint8_t maze_map[MAZE_HEIGHT][MAZE_WIDTH] = {
+// Mapa 1: Clássico
+static const uint8_t maze_map1[MAZE_HEIGHT][MAZE_WIDTH] = {
     {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
     {1,0,0,0,1,0,0,0,0,0,0,0,0,0,0,1},
     {1,0,1,0,1,0,1,1,1,1,1,1,1,1,0,1},
@@ -165,8 +170,51 @@ static const uint8_t maze_map[MAZE_HEIGHT][MAZE_WIDTH] = {
     {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
 };
 
+// Mapa 2: ZigZag
+static const uint8_t maze_map2[MAZE_HEIGHT][MAZE_WIDTH] = {
+    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1},
+    {1,0,1,0,0,0,0,0,0,0,0,0,0,1,0,1},
+    {1,0,1,0,1,1,1,1,1,1,1,1,0,1,0,1},
+    {1,0,1,0,1,0,0,0,0,0,0,1,0,1,0,1},
+    {1,0,1,0,1,0,1,1,1,1,0,1,0,1,0,1},
+    {1,0,1,0,1,0,1,2,1,1,0,1,0,1,0,1},
+    {1,0,1,0,1,0,1,0,0,0,0,1,0,1,0,1},
+    {1,0,1,0,1,0,1,1,1,1,1,1,0,1,0,1},
+    {1,0,1,0,1,0,0,0,0,0,0,0,0,1,0,1},
+    {1,0,1,0,1,1,1,1,1,1,1,1,1,1,0,1},
+    {1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,1,1,1,1,1,1,1,1,1,1,1,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,3,1},
+    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+};
+
+// Mapa 3: Pilares
+static const uint8_t maze_map3[MAZE_HEIGHT][MAZE_WIDTH] = {
+    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1},
+    {1,0,0,0,0,0,0,2,0,0,0,0,0,0,0,1},
+    {1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,1,0,1,0,1,0,1,0,1,0,1,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+    {1,0,0,0,0,0,0,0,0,0,0,0,0,0,3,1},
+    {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+};
+
+static const uint8_t (*maps[])[MAZE_WIDTH] = { maze_map1, maze_map2, maze_map3 };
+static const char *map_names[] = { "CLASSIC", "ZIGZAG", "PILLARS" };
+
 static void maze_init(void) {
-    memcpy(maze.cells, maze_map, sizeof(maze_map));
+    memcpy(maze.cells, maps[selected_map_idx], sizeof(maze_map1));
     maze.start_x = 1;
     maze.start_y = 1;
     maze.goal_x = 14;
@@ -200,9 +248,6 @@ static void ball_update_physics(float dt, float tilt_x, float tilt_y) {
     ball.vx += ball.ax * dt;
     ball.vy += ball.ay * dt;
     
-    // Aplicar atrito
-    ball.vx *= FRICTION;
-    ball.vy *= FRICTION;
     
     // Limitar velocidade máxima
     float speed = sqrtf(ball.vx * ball.vx + ball.vy * ball.vy);
@@ -253,7 +298,7 @@ static uint8_t ball_check_goal(void) {
     return (maze_get_cell(cell_x, cell_y) == CELL_GOAL);
 }
 
-/* ==== Relógio (hh:mm:ss) - REQUISITO ==== */
+/* ==== Relógio (hh:mm:ss) ==== */
 
 /* Callback do Timer: atualiza relógio a cada 1 segundo */
 static void vClockTimerCallback(TimerHandle_t xTimer) {
@@ -277,11 +322,29 @@ static void vClockTimerCallback(TimerHandle_t xTimer) {
 
 /* ==== Renderização ==== */
 
+static void render_map_selector(void) {
+    st7789_fill_screen_dma(COLOR_BLACK);
+    st7789_draw_text_5x7(60, 40, "SELECT MAP", COLOR_WHITE, 2, 0, 0);
+    
+    char buf[32];
+    snprintf(buf, sizeof(buf), "< %s >", map_names[selected_map_idx]);
+    
+    // Centralizar texto (aprox)
+    int len = strlen(buf);
+    int x = (240 - (len * 12)) / 2; // 12px por char (escala 2)
+    if (x < 0) x = 0;
+    
+    st7789_draw_text_5x7(x, 100, buf, COLOR_YELLOW, 2, 0, 0);
+    
+    st7789_draw_text_5x7(80, 160, "Tilt DOWN", COLOR_CYAN, 1, 0, 0);
+    st7789_draw_text_5x7(80, 175, "to confirm", COLOR_CYAN, 1, 0, 0);
+}
+
 static void render_clock(void) {
     char buf[16];
     snprintf(buf, sizeof(buf), "%02d:%02d:%02d", 
              system_clock.hours, system_clock.minutes, system_clock.seconds);
-    st7789_draw_text_5x7(5, 12, buf, COLOR_YELLOW, 1, 0, 0);
+    st7789_draw_text_5x7(5, 12, buf, COLOR_YELLOW, 1, 1, COLOR_BLACK);
 }
 
 static void render_maze(void) {
@@ -321,13 +384,13 @@ static void render_hud(void) {
     
     // Vidas
     snprintf(buf, sizeof(buf), "LIVES:%d", lives);
-    st7789_draw_text_5x7(90, 12, buf, COLOR_WHITE, 1, 0, 0);
+    st7789_draw_text_5x7(90, 12, buf, COLOR_WHITE, 1, 1, COLOR_BLACK);
     
     // Tempo do jogo
     uint32_t sec = game_time_ms / 1000;
     uint32_t ms = game_time_ms % 1000;
     snprintf(buf, sizeof(buf), "T:%02lu.%03lu", (unsigned long)sec, (unsigned long)ms);
-    st7789_draw_text_5x7(165, 12, buf, COLOR_CYAN, 1, 0, 0);
+    st7789_draw_text_5x7(165, 12, buf, COLOR_CYAN, 1, 1, COLOR_BLACK);
 }
 
 static void render_game_over(void) {
@@ -378,12 +441,12 @@ static uint8_t button_read(void) {
 
 /* ==== Tasks FreeRTOS - REQUISITO: Mínimo 3 tarefas ==== */
 
-/* Task 1: Leitura do IMU (50Hz) - REQUISITO: Temporização determinística */
+/* Task 1: Leitura do IMU (30Hz) - REQUISITO: Temporização determinística */
 static void IMU_Task(void *arg) {
     (void)arg;
     mpu6050_raw_t imu_data;
     TickType_t xLastWakeTime;
-    const TickType_t xPeriod = pdMS_TO_TICKS(20); // 50Hz
+    const TickType_t xPeriod = pdMS_TO_TICKS(33); // ~30Hz
     
     xLastWakeTime = xTaskGetTickCount();
     
@@ -398,12 +461,12 @@ static void IMU_Task(void *arg) {
     }
 }
 
-/* Task 2: Lógica do Jogo (50Hz) - REQUISITO: Máquina de Estados */
+/* Task 2: Lógica do Jogo (30Hz) - REQUISITO: Máquina de Estados */
 static void GameLogic_Task(void *arg) {
     (void)arg;
     mpu6050_raw_t imu_data;
     TickType_t xLastWakeTime;
-    const TickType_t xPeriod = pdMS_TO_TICKS(20); // 50Hz
+    const TickType_t xPeriod = pdMS_TO_TICKS(33); // ~30Hz
     TickType_t last_physics_time;
     uint32_t start_ticks = 0;
     
@@ -418,12 +481,45 @@ static void GameLogic_Task(void *arg) {
         /* REQUISITO: Máquina de Estados */
         switch (game_state) {
             case GAME_INIT:
-                printf("[STATE] INIT -> READY\n");
-                maze_init();
-                ball_init();
-                lives = MAX_LIVES;
-                game_time_ms = 0;
-                game_state = GAME_READY;
+                printf("[STATE] INIT -> SELECT_MAP\n");
+                game_state = GAME_SELECT_MAP;
+                break;
+
+            case GAME_SELECT_MAP:
+                if (xQueueReceive(imu_queue, &imu_data, 0) == pdPASS) {
+                    float tilt_x = (float)(imu_data.ax - accel_offset_x);
+                    float tilt_y = (float)(imu_data.ay - accel_offset_y);
+                    
+                    // Screen X = -tilt_y (Direita/Esquerda)
+                    // Screen Y = -tilt_x (Cima/Baixo)
+                    float screen_x = -tilt_y;
+                    float screen_y = -tilt_x;
+                    
+                    static uint32_t last_move_time = 0;
+                    
+                    // Navegação (Direita/Esquerda) com delay para evitar troca rápida
+                    if (now - last_move_time > pdMS_TO_TICKS(400)) {
+                        if (screen_x > 4000) { // Direita
+                            selected_map_idx = (selected_map_idx + 1) % 3;
+                            last_move_time = now;
+                            printf("[MENU] Map: %d\n", selected_map_idx);
+                        } else if (screen_x < -4000) { // Esquerda
+                            selected_map_idx = (selected_map_idx + 2) % 3; // -1
+                            last_move_time = now;
+                            printf("[MENU] Map: %d\n", selected_map_idx);
+                        }
+                    }
+                    
+                    // Confirmação (Baixo)
+                    if (screen_y > 5000) { // Baixo
+                         printf("[STATE] SELECT_MAP -> READY (Map %d)\n", selected_map_idx);
+                         maze_init();
+                         ball_init();
+                         lives = MAX_LIVES;
+                         game_time_ms = 0;
+                         game_state = GAME_READY;
+                    }
+                }
                 break;
                 
             case GAME_READY:
@@ -441,7 +537,25 @@ static void GameLogic_Task(void *arg) {
                 // REQUISITO: Receber dados da Queue
                 if (xQueueReceive(imu_queue, &imu_data, 0) == pdPASS) {
                     // Atualizar física da bola
-                    ball_update_physics(dt, (float)imu_data.ay, (float)imu_data.ax);
+                    // Mapeamento: X do MPU -> X do Display (Horizontal)
+                    //             Y do MPU -> Y do Display (Vertical)
+                    // Subtraindo offsets de calibração
+                    float tilt_x = (float)(imu_data.ax - accel_offset_x);
+                    float tilt_y = (float)(imu_data.ay - accel_offset_y);
+                    
+                    // Mapeamento corrigido conforme log:
+                    // "Virar pra baixo" gerou AX negativo (-14000).
+                    // No display, Y aumenta para baixo. Então Display Y = -Sensor X.
+                    // Assumindo rotação de 90 graus: Display X = Sensor Y.
+                    // Invertendo X (Direita/Esquerda) conforme solicitado.
+                    
+                    ball_update_physics(dt, -tilt_y, -tilt_x);
+
+                    // DEBUG: Imprimir valores do MPU a cada ~1 segundo (50 ciclos de 20ms)
+                    static int debug_cnt = 0;
+                    if (++debug_cnt >= 25) { // 25 * 20ms = 500ms
+                        debug_cnt = 0;
+                    }
                 }
                 
                 // Verificar queda em buraco
@@ -502,18 +616,34 @@ static void GameLogic_Task(void *arg) {
     }
 }
 
-/* Task 3: Renderização do Display (20Hz) - REQUISITO: Mutex */
+/* Task 3: Renderização do Display (10Hz) - REQUISITO: Mutex */
 static void Display_Task(void *arg) {
     (void)arg;
     TickType_t xLastWakeTime;
-    const TickType_t xPeriod = pdMS_TO_TICKS(50); // 20Hz
+    const TickType_t xPeriod = pdMS_TO_TICKS(100); // 10Hz
     
     xLastWakeTime = xTaskGetTickCount();
     
+    static GameState last_drawn_state = -1; // Estado inválido para forçar primeiro desenho
+    static int last_drawn_map_idx = -1;
+
     for (;;) {
         // REQUISITO: Usar Mutex para acesso ao display
         if (xSemaphoreTake(display_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            
+            int state_changed = (game_state != last_drawn_state);
+            int map_changed = (selected_map_idx != last_drawn_map_idx);
+            
+            last_drawn_state = game_state;
+            last_drawn_map_idx = selected_map_idx;
+
             switch (game_state) {
+                case GAME_SELECT_MAP:
+                    if (state_changed || map_changed) {
+                        render_map_selector();
+                    }
+                    break;
+
                 case GAME_READY:
                 case GAME_PLAYING:
                 case GAME_LOST_LIFE:
@@ -523,13 +653,15 @@ static void Display_Task(void *arg) {
                     break;
                     
                 case GAME_WON:
-                    render_win();
-                    render_clock(); // Mostrar relógio sempre
+                    // Só redesenha a tela de vitória se o estado mudou (evita flicker)
+                    if (state_changed) render_win();
+                    render_clock(); // Relógio continua atualizando
                     break;
                     
                 case GAME_OVER:
-                    render_game_over();
-                    render_clock(); // Mostrar relógio sempre
+                    // Só redesenha a tela de Game Over se o estado mudou (evita flicker)
+                    if (state_changed) render_game_over();
+                    render_clock(); // Relógio continua atualizando
                     break;
                     
                 default:
@@ -544,11 +676,11 @@ static void Display_Task(void *arg) {
     }
 }
 
-/* Task 4: Leitura do Botão (50Hz) */
+/* Task 4: Leitura do Botão (10Hz) */
 static void Button_Task(void *arg) {
     (void)arg;
     TickType_t xLastWakeTime;
-    const TickType_t xPeriod = pdMS_TO_TICKS(20); // 50Hz
+    const TickType_t xPeriod = pdMS_TO_TICKS(100); // 10Hz
     
     xLastWakeTime = xTaskGetTickCount();
     
@@ -593,6 +725,41 @@ static void ClockDisplay_Task(void *arg) {
     }
 }
 
+/* ==== Funções de Calibração ==== */
+
+static void calibrate_mpu(void) {
+    printf("[CALIB] Iniciando calibração do MPU6050...\n");
+    printf("[CALIB] Mantenha a placa parada e nivelada!\n");
+    
+    st7789_fill_screen_dma(COLOR_BLACK);
+    st7789_draw_text_5x7(40, 100, "CALIBRANDO...", COLOR_YELLOW, 2, 0, 0);
+    st7789_draw_text_5x7(30, 130, "Mantenha parado", COLOR_WHITE, 1, 0, 0);
+    
+    delay_ms(1000); // Espera estabilizar
+    
+    int32_t sum_x = 0;
+    int32_t sum_y = 0;
+    const int samples = 50;
+    mpu6050_raw_t raw;
+    
+    for (int i = 0; i < samples; i++) {
+        if (mpu6050_read_all(&raw) == 0) {
+            sum_x += raw.ax;
+            sum_y += raw.ay;
+        }
+        delay_ms(20);
+    }
+    
+    accel_offset_x = (int16_t)(sum_x / samples);
+    accel_offset_y = (int16_t)(sum_y / samples);
+    
+    printf("[CALIB] Offsets definidos: X=%d, Y=%d\n", accel_offset_x, accel_offset_y);
+    
+    st7789_fill_screen_dma(COLOR_GREEN);
+    st7789_draw_text_5x7(60, 110, "OK!", COLOR_BLACK, 3, 0, 0);
+    delay_ms(500);
+}
+
 /* ==== Main ==== */
 
 int main(void) {
@@ -610,13 +777,26 @@ int main(void) {
     
     // Inicializar display
     st7789_init();
-    st7789_fill_screen_dma(COLOR_BLACK);
+    st7789_fill_screen_dma(COLOR_BLUE); // Tela AZUL para teste de vida
     delay_ms(100);
     st7789_set_speed_div(2);
     printf("[OK] Display ST7789 inicializado\n");
     
     // Inicializar I2C e MPU6050
     i2c1_init_100k(50000000u);
+
+    // --- DIAGNÓSTICO I2C ---
+    printf("Procurando MPU6050...\n");
+    uint8_t who = 0;
+    int found_68 = i2c1_read_reg(0x68, 0x75, &who);
+    if (found_68 == 0) printf(" > Encontrado em 0x68 (WHO_AM_I=0x%02X)\n", who);
+    else               printf(" > Falha em 0x68\n");
+
+    int found_69 = i2c1_read_reg(0x69, 0x75, &who);
+    if (found_69 == 0) printf(" > Encontrado em 0x69 (WHO_AM_I=0x%02X)\n", who);
+    else               printf(" > Falha em 0x69\n");
+    // -----------------------
+
     if (mpu6050_init() < 0) {
         printf("[ERRO] MPU6050 não detectado!\n");
         st7789_fill_screen_dma(COLOR_RED);
@@ -627,7 +807,11 @@ int main(void) {
     }
     printf("[OK] MPU6050 inicializado\n");
     
+    // Calibrar MPU6050
+    calibrate_mpu();
+    
     // Mensagem inicial
+    st7789_fill_screen_dma(COLOR_BLACK);
     st7789_draw_text_5x7(20, 90, "LABIRINTO DIGITAL", COLOR_GREEN, 2, 0, 0);
     st7789_draw_text_5x7(40, 120, "Inicializando...", COLOR_WHITE, 1, 0, 0);
     delay_ms(1500);
@@ -723,15 +907,6 @@ int main(void) {
     }
     printf("[OK] Task ClockDisplay criada (Pri:1, 1Hz)\n");
     
-    printf("\n[INFO] Resumo de requisitos implementados:\n");
-    printf("  ✓ 5 tarefas criadas (requisito: mín. 3)\n");
-    printf("  ✓ Máquina de estados (GameLogic_Task)\n");
-    printf("  ✓ Queue para dados IMU\n");
-    printf("  ✓ Mutex para acesso ao display\n");
-    printf("  ✓ Semáforo binário para estados\n");
-    printf("  ✓ Software Timer para relógio\n");
-    printf("  ✓ Temporização determinística (vTaskDelayUntil)\n");
-    printf("  ✓ Relógio hh:mm:ss no display\n");
     
     printf("\n[START] Iniciando scheduler FreeRTOS...\n");
     vTaskStartScheduler();
